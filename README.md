@@ -21,9 +21,9 @@ The goal of this project is to predict the number of followers a Spotify playlis
 
 The project is broken down into the following notebooks:
 
-1. [Data Retrieval](https://github.com/delvinso/spotify-predict-followers/blob/master/01_mining.md)
-2. [EDA and Feature Engineering](https://github.com/delvinso/spotify-predict-followers/blob/master/02_wrangle_eda_feat.md)
-3. [Modeling](https://github.com/delvinso/spotify-predict-followers/blob/master/03_modeling.md)
+1. [Data Retrieval](https://github.com/delvinso/spotify-predict-playlist-followers/blob/master/01_mining.md)
+2. [EDA and Feature Engineering](https://github.com/delvinso/spotify-predict-playlist-followers/blob/master/02_wrangle_eda_feat.md)
+3. [Modeling](https://github.com/delvinso/spotify-predict-playlist-followers/blob/master/03_modeling.md)
 4. ~~Playlist Generator~~
 
 ## The Data
