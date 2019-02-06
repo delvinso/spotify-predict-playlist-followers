@@ -1,0 +1,1522 @@
+---
+title: "02. Exploratory Data Analysis, Feature Engineering of Playlist-Level Features "
+author: "Delvin So"
+date: '2018-12-23'
+output: 
+  html_document:
+    keep_md: true
+    theme: journal
+    toc: true
+    toc_depth: 4
+    toc_float : true
+    df_print: tibble
+editor_options: 
+  chunk_output_type: inline
+---
+## Problem Statement
+
+The goal of this is to project is to gain insight into
+
+1. Key predictors that are influential in a playlist's success
+
+~~2. Using the identified predictors, generate a playlist that is successful (metric measured in the # of followers)~~
+
+In the [previous notebook](link), 92876 songs over 1541 playlists were retrieved from Spotify's featured playlists using their API. This was done using the spotifyr package and self-modified functions. The data consists of qualitative audio features pertaining to each track within a playlist, such as the key, mode, the artist genre, and quantitative features such as loudness, acousticness, valence, etc. 
+
+
+## Introduction and Description of the Data
+
+Using track level data, summary statistics were generated on the playlist level for quantitative audio features. All interactions and second-degree polynomials were also investigated and included in the final predictors. For categorical audio features (mode, key), factors were created corresponding to the majority vote, for example if a greater proportion of songs were in major than minor for a playlist, then the playlist would be considered primarily in major.
+
+Features corresponding to highly occuring genres annd artists within the top 33% of playlists were also created.
+
+It is possible that frequently occuring genres and artists within the top 33% of playlists (arbitrarily decided on), could contribute to the success of a playlist. Thus, the presence of the top 1% of artists and top 5% of genres were one-hot encoded on the playlist level as features. 
+
+In total, 422 features were created. 
+
+
+## Setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      tidy = FALSE,
+                      warning = FALSE,
+                      message = FALSE,
+                      cache = TRUE)
+
+suppressMessages(library(tidyverse))
+suppressMessages(library(spotifyr))
+suppressMessages(library(xml2))
+suppressMessages(library(readr))
+suppressMessages(library(httr))
+suppressMessages(library(naniar))
+suppressMessages(library(corrplot))
+suppressMessages(library(caret))
+source("statSmoothFunc.R")
+
+theme_set(theme_minimal())
+
+options(tibble.max_extra_cols = 5) # prints only 5 columns extra to prevent wrapping around page when the tibbles get larger
+
+```
+## Helpers
+
+```{r}
+
+scttrCor <- function(...){
+ggplot(...) +
+  geom_point( alpha = 0.5, size = 0.8) +
+  geom_smooth(formula = y~x, method = "lm", se = FALSE, size = 0.3, alpha = 0.5, colour = "black") + 
+  stat_smooth_func(geom = "text", method = "lm", xpos = -Inf, ypos = Inf, hjust = -0.2, vjust = 1, parse = TRUE, size = 3) +
+  theme(strip.text = element_text(face = "bold"),
+        axis.text = element_text(face = "bold"),
+        axis.title = element_text(face = "bold"))
+}
+
+
+histoPlot <- function(...){
+  ggplot(...) + 
+  geom_histogram() +
+  theme(strip.text = element_text(face = "bold"),
+        axis.text = element_text(face = "bold"),
+        axis.title = element_text(face = "bold"))
+}
+
+boxJitterPlot <- function(...){
+    ggplot(...) + 
+    geom_jitter( width = 0.1,
+                alpha = 0.5) + 
+    geom_boxplot(width = 0.5, alpha = 0.8, colour = "black" ) + 
+    stat_summary(fun.y = mean, geom = "errorbar", aes(ymax = ..y.., ymin = ..y..),
+                 width = .75, linetype = "dashed", colour = "black") + 
+  stat_summary(fun.y = mean, geom = "text", aes(label = round(..y.., 4)), vjust = -0.5, colour = "black") + 
+  guides(fill = FALSE, colour = FALSE) 
+}
+
+
+quantile_tidy <- function(...){
+  broom::tidy(quantile(...)) %>%
+    arrange(desc(x)) %>%
+    rename(percentile = names) %>%
+    mutate(percentile = as.numeric(as.character(gsub("%", "", percentile))))
+}
+
+# for ggpairs 
+corLine <- function(data, mapping, ...){
+  p <- ggplot(data = data, mapping = mapping) + 
+    geom_point(size = 0.2, alpha = 0.5) + 
+    stat_smooth_func(geom = "text", method = "lm", xpos = -Inf, ypos = Inf, hjust = -0.2, vjust = 1, parse = TRUE, size = 2) +
+  geom_smooth(formula = y~x, method = "lm", se = FALSE, size = 0.3, alpha = 0.5, colour = "black")
+}
+```
+
+
+## The Data
+```{r}
+# Playlist Followers - the response
+pl_info <- read_csv("data/raw/pl_info.csv", col_types = cols())
+# Playlist Audio Features - the predictors
+pl_audio_feats <- read_csv("data/raw/pl_audio_feats.csv", col_types = cols())
+# Playlist Artist Featurs - the predictors
+pl_artist_feats <- read_csv("data/raw/pl_artist_feats.csv", col_types = cols())
+
+```
+
+First, let's combine the three dataframes together.
+```{r, messages = FALSE}
+# Combining the data together using left join - 
+
+pl_dat <- pl_info %>% 
+  left_join(pl_audio_feats) %>% 
+  left_join(pl_artist_feats)
+
+glimpse(pl_dat)
+
+dim(pl_dat) # of songs
+pl_dat %>% distinct(playlist_name) # number of playlists
+
+pl_dat
+
+```
+
+Investigate duplicate songs, playlists and playlists with no followers.
+```{r}
+
+# dropping unnecessary columns and ensuring all songs are unique
+
+pl_dat <- pl_dat %>% 
+  select(-contains("uri"), track_added_at) %>%
+  distinct()
+
+# checking to see if there are any 0 follower playlists
+any(pl_dat$playlist_followers == 0)
+
+# some playlists are duplicated, remove
+pl_dat %>% distinct(playlist_name, playlist_followers) %>% count(playlist_name, sort = TRUE)
+
+duplicated_playlists <- c("New Music Friday", "Chill as Folk", "Jukebox Joint")
+
+pl_dat <- pl_dat %>% filter(!playlist_name %in% duplicated_playlists)
+
+# will be used later to split our testing and training data again
+write_csv(pl_dat, "data/clean_pl_eda_train.csv")
+
+# pl_dat %>% filter(playlist_name %in% duplicated_playlists)
+```
+
+Next, we'll examine the number of missing values for each variable.
+```{r}
+miss_var_summary(pl_dat) %>% print(n = 30)
+```
+
+We will deal with these down the road..
+
+
+## Split into Training and Testing Sets
+
+Our primary goal is to predict the number of followers for a given playlist - we will split the data into a training and test set. The training dataset will be used to evaluate and create features that may garner insight into what makes a playlist successful.
+
+It's important that we split the dataset BEFORE we perform feature engineering, else we risk leakage into the test dataset.
+```{r}
+set.seed(11-22-1993)
+# retrieve all possible playlist names
+pl_names <- unique(pl_dat$playlist_name)
+# retrieve a random sample of indices corresponding to the vector of playlist names
+trainIndex <- sample(1:length(pl_names), size = length(pl_names) * 0.8) # OLD
+# 
+# creating the training set based on the randomly sampled indices
+pl_train <- pl_dat %>% filter(playlist_name %in% pl_names[trainIndex])
+# creating the testing set based on the randomly sampled indices
+pl_test <- pl_dat %>% filter(!playlist_name %in% pl_names[trainIndex])
+# sanity check
+length(unique(pl_train$playlist_name));length(unique(pl_test$playlist_name))
+```
+
+
+## Response Variable - Playlist Followers
+
+A playlist's success is a function of the number of followers. Visualizing its distribution will give us some further insight. 
+```{r}
+pl_train %>% 
+  distinct(playlist_name, playlist_followers) %>% 
+  mutate(playlist_followers_log = log(playlist_followers)) %>%
+  gather(key = type, val = value, playlist_followers:playlist_followers_log) %>%
+  histoPlot(aes(x = value, fill = type), bins = 50, colour = "white", size = 0.001) +
+    facet_wrap(~ type, scales = "free") +
+    guides(fill = FALSE)
+
+pl_train$playlist_followers_log <- log(pl_train$playlist_followers)
+
+```
+
+The response variable is highly right skewed, and so we log transform it. This expands the values in the range of lower magnitudes while compressing the values in the range of higher magnitudes, essentially normalizing the distribution as much as possible.
+
+For feature engineerinng, we will determine a threshold for what constitutes are 'successful' playlist - 
+
+Perhaps filter out playlists under x amount of followers given the scope of the project - use percentiles?
+
+```{r}
+follow_sextiles <- quantile_tidy(pl_train$playlist_followers, probs = (seq(0, 1, by = 1/6)))
+follow_sextiles %>% spread(percentile, x)
+```
+
+The top 33% of playlist followers in the training set is ~190k. This seems like an appropriate starting point for a 'successful' playlist and also allows us to narrow down our focus.
+
+
+## Exploring Predictors - Relationship with Playlist Followers
+
+<!-- The predictors can be broken down into 4 major categories. -->
+
+<!-- 1) the number of artist followers -->
+<!-- 2) the artist genres -->
+<!-- 3) audio features of each track within a playlist. -->
+<!-- 4) interactions between and within  -->
+
+
+### Artist Features (DONE)
+
+#### Frequent Artists in Highly Successful Playlists
+
+Artists who appear most frequently in playlists with a higher number of followers are likely to be a good predictor of success. I will arbitrarily examine the top 33% of playlists, these have over ~190k followers. 
+
+First, we identify which artists are in the top 33% of playlists.
+```{r}
+# Filtering playlists consisting of the top 33% of artists
+top_3rd_pl <- pl_train %>%         
+  # filtering playlists that contain top 33% artists
+  filter(playlist_followers >= follow_sextiles$x[3]) 
+
+# Occurrences of an artist within the top 33% of playlists
+artist_count <- top_3rd_pl %>%
+  # many of these playlists have reoccuring artists
+  filter(!str_detect(playlist_name, "(This Is|Best)")) %>%
+  count(artist_name) %>%
+  arrange(desc(n))  %>%
+  print(n = 10)
+# artist_count
+
+
+```
+There are `r dim(artist_count)[1]` artists within the top 33% of playlists, which consist of `r top_3rd_pl %>% distinct(playlist_name) %>% count()` playlists.
+
+Do reoccuring artists within the top playlists have an effect on the number of followers in the given playlist? 
+
+To investigate this, the artist count is broken down into arbitrary percentiles, I will look at 1% as that consists of approximately ~100 artists. We could create dummy variables for other percentiles, but it seems unlikely that other percentiles would have an affect on the number of followers.
+
+```{r}
+# Start with 5%
+artist_quintile <- quantile_tidy(artist_count$n, probs = seq(0, 1, by = 1/20)) %>% head() %>% spread(percentile, x)
+artist_quintile
+
+
+# Then 1% 
+artist_percentile <- quantile_tidy(artist_count$n, probs = seq(0, 1, by = 1/100)) %>% head() %>% spread(percentile, x)
+artist_percentile
+
+
+# Subsetting and creating a dummy variable for the top 1 and 5% of artists
+artist_count <- artist_count %>% mutate(top_one_perc = as.factor(ifelse(n >= artist_percentile$`99`, 1, 0)),
+                                        top_five_perc = as.factor(ifelse(n >= artist_quintile$`95`, 1, 0)))
+
+# Sanity check - how many artists are in the top 1%?
+# artist_count %>% count(top_one_perc)
+
+# The top 5%?
+# artist_count %>% count(top_five_perc)
+
+# Determining whether a top 1% artist appears in a playlist
+frequent_artists_pl <- pl_train %>% 
+  # if an artist is in the top 1%, then label it accordingly
+  mutate(one_perc = ifelse(artist_name %in% artist_count$artist_name[artist_count$top_one_perc == 1], 
+                           1, 0),
+         five_perc = ifelse(artist_name %in% artist_count$artist_name[artist_count$top_five_perc == 1], 1, 0)) 
+```
+
+Now that we have identified whether an artist is in the 1% of occuring artists, we can use it to determine:
+
+1) Whether a playlist has a top 1% artist. 
+
+2) The number of times a top 1% artist appears in a playlist.
+
+This allows us to determine if there is an effect on the number of followers by comparing whether the mean followers of playlists that have or don't have a top 1% artist present. 
+```{r eval = FALSE, include = FALSE}
+# NO EVAL
+
+# Counts of top 1% artists within a playlist 
+frequent_artists_pl  %>% 
+# top_3rd_pl %>% 
+  # has repetitive artists due to the nature of the indicated playlists
+  filter(!str_detect(playlist_name, "(This Is|Best)")) %>%
+  group_by(playlist_name, one_perc) %>%
+  summarize(n = n())
+
+# Counts of top 5% artists within a playlist 
+frequent_artists_pl %>%
+# top_3rd_pl %>% 
+  # has repetitive artists due to the nature of the indicated playlists
+  filter(!str_detect(playlist_name, "(This Is|Best)")) %>%
+  group_by(playlist_name, five_perc) %>%
+  summarize(n = n())
+```
+
+The next step is to examine whether a top % artist is present or not in the playlist.
+```{r}
+# Creating a dummy variable indicating whether a top 1% or 5% artist appears in the playlist
+
+# If, in a given playlist, a top 1% artist is in the playlist, then assign a 1, else 0 
+has_one_perc_key <- frequent_artists_pl %>%
+  group_by(playlist_name) %>% 
+  summarize(has_one_perc = ifelse(sum(one_perc) > 0, 1, 0)) %>%
+  mutate(has_one_perc = as.factor(has_one_perc))
+
+# How many playlists have a top 1% artist?
+has_one_perc_key %>% count(has_one_perc)
+
+# Repeat with 5% 
+has_five_perc_key <- frequent_artists_pl  %>%
+  group_by(playlist_name) %>% 
+  summarize(has_five_perc = ifelse(sum(five_perc) > 0, 1, 0)) %>%
+  mutate(has_five_perc = as.factor(has_five_perc))
+
+# How many playlists have a top 5% artist?
+has_five_perc_key %>% count(has_five_perc)
+
+```
+
+Is there a difference in the mean number of followers when a top 1% artist is present in the playlist?
+```{r, echo=FALSE}
+
+frequent_artists_pl %>% 
+  left_join(has_one_perc_key) %>%
+  group_by(has_one_perc) %>% 
+  distinct(has_one_perc, playlist_name, playlist_followers_log) %>%
+  # summarize(avg = mean(playlist_followers_log, na.rm = TRUE))
+ boxJitterPlot(aes(x = has_one_perc, y = playlist_followers_log, fill = has_one_perc, colour = has_one_perc))
+# rougghly 200k follower difference in means
+```
+```{r, echo = FALSE}
+# 5%
+frequent_artists_pl %>% 
+  left_join(has_five_perc_key) %>%
+  group_by(has_five_perc) %>% 
+  distinct(has_five_perc, playlist_name, playlist_followers_log) %>%
+  # summarize(avg = mean(playlist_followers_log, na.rm = TRUE))
+  boxJitterPlot(aes(x = has_five_perc, y = playlist_followers_log, fill = has_five_perc, colour = has_five_perc )) 
+```
+
+Although the difference between a top 5% reoccuring artist and a top 1% reoccuring artist seems small, the difference in the number of playlists is more balanced with 1%. 
+
+#### Artist Followers 
+
+Next, we examine the relationship between the mean, median, and standard deviation of the artist followers for a playlist.
+```{r}
+artist_descr <- pl_train %>% 
+  group_by(playlist_name) %>%
+  summarize_at(vars(artist_followers),
+                      funs(avg = mean(., na.rm = TRUE),
+                           med = median(., na.rm = TRUE),
+                           sd = sd(., na.rm = TRUE))) %>% 
+  left_join(pl_train %>%
+              distinct(playlist_name, playlist_followers)
+            )
+
+artist_descr %>%
+  gather(key = stat, value = val, avg:sd) %>%
+  histoPlot(aes(x = val)) + 
+  facet_wrap(~ stat, scales = "free")
+
+
+```
+
+We will take the log of each variable due to the strong right skewedness and then see if there is a correlation between the variables and playlist followers.
+```{r}
+
+artist_descr %>%
+  gather(key = stat, value = val, avg:sd) %>%
+  histoPlot(aes(x = log(val))) + 
+  facet_wrap(~ stat, scales = "free")
+
+artist_descr %>%
+  gather(key = stat, value = val, avg:sd) %>%
+  scttrCor(aes(x = log(val), y = log(playlist_followers), colour = stat, alpha = 0.9, size = 1)) + 
+  facet_wrap(~ stat, scales = "free") 
+  
+```
+
+There is a very weak, insignificant relationship between the mean and median number of log artist followers, and the number of playlist followers. 
+
+<!-- #### LEAK: Top 50 Artist Presence - since top 100 from ALL playlists -->
+
+<!-- TODO:Maybe proportion of playlist that has top 100 artists? -->
+
+<!-- Does the presence of a popular (high follower count) artist have an effect on the number of playlist followers? Arbitrarily examine top 100. -->
+
+<!-- ```{r} -->
+<!-- top_100_artists <- pl_artist_feats %>%  -->
+<!--   select(-artist_uri) %>%  -->
+<!--   arrange(desc(artist_followers)) %>% -->
+<!--   top_n(100, artist_followers) %>% -->
+<!--   pull(artist_name)  -->
+
+<!-- top_100_artist_counts <- pl_train %>% -->
+<!--   group_by(playlist_name) %>% -->
+<!--   mutate(top_100_artist = ifelse(artist_name %in% top_100_artists, 1, 0)) %>% -->
+<!--   summarize(#n_artists = n(),  -->
+<!--             num_top_100_artist = sum(top_100_artist)) %>% -->
+<!--   arrange(-num_top_100_artist) -->
+<!-- # Visualizing the distribution - should just create a histogram function at this point -->
+
+
+<!-- top_100_artist_counts  -->
+
+
+<!-- histoPlot(pl_artist_feats , aes(x = log(artist_followers), fill = ..count..)) + -->
+<!--   scale_fill_viridis_c(guide = FALSE) -->
+
+
+<!-- histoPlot(top_100_artist_counts, aes(x =  log(num_top_100_artist), fill = ..count..)) + -->
+<!--   scale_fill_viridis_c(guide = FALSE) -->
+
+
+<!-- pl_train %>% -->
+<!--   left_join(top_100_artist_counts) %>% -->
+<!--   scttrCor(aes(x = log(num_top_100_artist), y = log(playlist_followers))) -->
+
+
+<!-- ```  -->
+
+<!-- I don't count the distinct number of top 100 artists, because it's very well plausible a playlist with many tracks from the same artist make it popular. -->
+
+#### Artist Popularity 
+
+```{r}
+artist_popularity <- pl_train %>%
+  group_by(playlist_name) %>%
+  # select(playlist_name, artist_name, artist_pop, track_popularity)
+  summarize(n = n(),
+            mean_artist_pop = mean(artist_pop, na.rm = TRUE),
+            med_artist_pop = median(artist_pop, na.rm = TRUE),
+            sd_artist_pop = sqrt(var(artist_pop, na.rm = TRUE))) 
+  
+artist_pop_long <- pl_train %>%
+  distinct(playlist_name, playlist_followers) %>% 
+  left_join(artist_popularity) %>%
+  gather(key = "statistic", value = "value", c(mean_artist_pop, med_artist_pop, sd_artist_pop ))
+
+artist_pop_long %>% 
+  histoPlot(aes( x = value)) +
+  facet_wrap(~ statistic, scales = "free")
+
+# no need to transform, looks pretty normal
+artist_pop_long %>% 
+scttrCor(aes(x = value, y = log(playlist_followers))) +
+  facet_wrap(~ statistic)
+
+```
+
+We can see that the mean and median artist popularity has a slight, but significant correlation with the number of followers!
+
+#### Track Popularity 
+
+```{r}
+track_popularity <- pl_train %>%
+  group_by(playlist_name) %>%
+  # select(playlist_name, artist_name, artist_pop, track_popularity)
+  summarize(n = n(),
+            mean_track_pop = mean(track_popularity, na.rm = TRUE),
+            med_track_pop = median(track_popularity, na.rm = TRUE),
+            sd_track_pop = sqrt(var(track_popularity, na.rm = TRUE)))
+  
+
+track_pop_long <- pl_train %>%
+  distinct(playlist_name, playlist_followers) %>% 
+  left_join(track_popularity) %>%
+  gather(key = "statistic", value = "value", c(mean_track_pop, med_track_pop, sd_track_pop))
+
+track_pop_long %>% 
+  histoPlot(aes( x = value)) +
+  facet_wrap(~ statistic, scales = "free")
+
+# no need to transform, looks pretty normal
+
+track_pop_long %>% 
+  scttrCor(aes(x = value, y = log(playlist_followers))) +
+  facet_wrap(~ statistic)
+
+
+# track_pop_long %>%
+#   mutate(value2 = log(value*n)) %>%
+#     scttrCor(aes(x = value2, y = log(playlist_followers))) +
+#   facet_wrap(~ statistic)
+
+```
+
+There is a strong and significant correlation between both mean and median track population.
+
+TODO: Product between track number and mean track popularity?
+
+### Artist Genres (DONE)
+
+Are certain genres associated with the number of playlist followers?
+Look at the mean number of followers of common genres (what is common? quantiles again..)
+Common Genres of top x?
+
+#### Frequent Genres in Highly Successful Playlists
+
+Similarly for genres, we will look at frequent genres that occur in the top 33% of playlists.
+
+```{r}
+gen_pl <- top_3rd_pl %>%
+  # split list of genres into individual columns
+  separate(artist_genres, sep = ", ", into = c(paste0("genre", c(1:10)))) %>%
+  # tidying genres
+  gather(key = genre, value = gen, genre1:genre10 )
+
+# Number of unique genres
+length(unique(gen_pl$gen))
+
+gen_pl
+```
+
+
+Let's examine the most common genres found in the top 33% of playlists, say the top 5% of reoccuring genres. We're interested in understanding whether these genres are correlated with the number of playlist followers. That is, if a playlist has a track with a 'popular' genre, will it likely have a greater number of playlist followers? 
+
+
+First, identify overall unique genre counts and the top 1 and 5% of counts.
+
+```{r}
+# Look at counts and distribution?
+gen_count <- gen_pl %>%
+  # Remove duplicate artists and the associated genres trims down from ~900k to ~280k
+  distinct(playlist_name, artist_name, playlist_followers, gen) %>%
+  count(gen) %>% 
+  arrange(desc(n)) %>% 
+  na.omit()
+
+gen_count
+
+
+quantile(gen_count$n, probs = c(0.99))
+quantile(gen_count$n, probs = c(0.95))
+
+gen_count <- gen_count %>% 
+  mutate(top_one_perc = as.factor(ifelse(n >= quantile(gen_count$n, probs = c(0.99)), 1, 0)),
+         top_five_perc = as.factor(ifelse(n >= quantile(gen_count$n, probs = c(0.95)), 1, 0)))
+
+gen_count
+```
+The top 1% of occuring genres among the top 33% of playlists in terms of playlist followers occurs at least 939 times within the top 33% of playlists, and the top 5% 341 times.
+
+
+Determine whether a frequently occuring genre is in a playlist, and then determine whether a playlist contains a top 5% occuring genre.
+
+```{r}
+
+# Creating a dummy variable indicating whether a top 1% or 5% artist appears in the playlist
+frequent_gens_pl <- pl_train %>%
+    separate(artist_genres, sep = ", ", into = c(paste0("genre", c(1:10)))) %>%
+  # tidying genres
+  gather(key = genre, value = gen, genre1:genre10 ) %>% 
+  select(playlist_name, genre, gen, playlist_followers_log) %>%
+  distinct(playlist_name, gen, playlist_followers_log) %>% 
+  # if an artist is in the top 1%, then label it accordingly
+  mutate(one_perc = ifelse(gen %in% gen_count$gen[gen_count$top_one_perc == 1], 1, 0),
+         five_perc = ifelse(gen %in% gen_count$gen[gen_count$top_five_perc == 1], 1, 0))#  %>% 
+
+frequent_gens_pl %>% select(playlist_name, gen, one_perc, five_perc, playlist_followers_log)
+
+
+# If, in a given playlist, a top 1% genre is in the playlist, then assign a 1, else 0 
+
+has_one_perc_gen_key <- frequent_gens_pl %>% 
+  group_by(playlist_name) %>% 
+  summarize(has_one_perc_genre = ifelse(sum(one_perc) > 0, 1, 0)) %>%
+  mutate(has_one_perc_genre = as.factor(has_one_perc_genre))
+
+
+# How many playlists have a top 1% genre?
+has_one_perc_gen_key %>% count(has_one_perc_genre)
+
+
+# repeat with 5% 
+
+has_five_perc_gen_key <- frequent_gens_pl %>% 
+  group_by(playlist_name) %>% 
+  summarize(has_five_perc_genre = ifelse(sum(five_perc) > 0, 1, 0)) %>%
+  mutate(has_five_perc_genre = as.factor(has_five_perc_genre))
+
+
+# How many playlists have a top 5% genre?
+has_five_perc_gen_key %>% count(has_five_perc_genre)
+
+
+```
+
+
+Is there a difference in the mean or median number of followers when a top 5% genre is present in the playlist?
+
+```{r}
+
+frequent_gens_pl %>% 
+    distinct(has_five_perc_genre, playlist_name, playlist_followers_log) %>%
+  left_join(has_five_perc_gen_key) %>%
+  boxJitterPlot(aes(x = has_five_perc_genre, y = playlist_followers_log, fill = has_five_perc_genre, colour = has_five_perc_genre ))
+
+
+frequent_gens_pl %>% 
+    distinct(has_one_perc_genre, playlist_name, playlist_followers_log) %>%
+  left_join(has_one_perc_gen_key) %>%
+  boxJitterPlot(aes(x = has_one_perc_genre, y = playlist_followers_log, fill = has_one_perc_genre, colour = has_one_perc_genre ))
+
+```
+
+There appears to be a difference in the median, but not the mean number of log playlist followers depending on whether playlists contain a top 1 or top 5 percent genre among the top 33% of playlists.
+
+<!-- ???? Next, we will visualize the relationship between the mean number of followers per genre for the top 5% of genre counts. -->
+```{r}
+# # Calculate mean number of followers per genre
+# mean_by_genre <- pl_train %>% 
+#   filter(artist_genres %in% five_perc_genres) %>% 
+#   distinct(playlist_name, playlist_followers, artist_genres) %>% 
+#   group_by(artist_genres) %>% 
+#   summarize(n = n(),
+#             mean = mean(log(playlist_followers)),
+#             med = median(log(playlist_followers))) %>%
+#   arrange(desc(mean))
+# 
+# mean_by_genre 
+# # Plotting the mean number of followers per genre
+# ggplot(mean_by_genre, aes(x = reorder(artist_genres, -mean), y = mean)) +
+#   geom_point() + 
+#     # geom_col() +
+#     geom_point() + 
+#     # geom_label(aes(label = round(mean, 2)), size = 2) +
+#     theme_minimal() +
+#     coord_flip() +
+#     guides(fill = FALSE) +
+#     # scale_y_continuous(labels = scales::comma) +
+#     theme(axis.text.x = element_text(angle = 0, hjust = 1))
+
+# Distribution by genre
+
+# top_gen_follower <- gen_pl %>% 
+#   filter(gen %in% five_perc_genres) %>% 
+#   distinct(playlist_name, playlist_followers, gen) %>%
+#   mutate(gen = as.factor(gen))
+
+# top_gen_aov <- (aov(lm(data = top_gen_follower, log(playlist_followers) ~ gen)))
+# summary(top_gen_aov)
+# plot(top_gen_aov)
+
+# 
+# ggplot(top_gen_follower, aes(y = log(playlist_followers), x = reorder(gen, - log(playlist_followers)))) + 
+#   # geom_histogram(aes(fill = gen), bins = 30) + 
+#   geom_boxplot(size = 0.5, alpha = 0.8, width = 0.5, aes(fill = gen)) +
+#   coord_flip()
+
+```
+
+
+<!-- We can also investigate whether the number of occurences of a genre correlated to the number of followers a playlist has. -->
+```{r, fig.width = 6, fig.width = 4}
+# gen_mean_occur <- mean_by_genre %>% 
+#   left_join(
+#     # the top 1% of genres by occurences
+#     gen_count %>% filter(n > 392)
+#     )
+# 
+# scttrCor(gen_mean_occur, aes(x = n, y = mean)) 
+```
+<!-- Nothing here.. -->
+
+
+#### Omitted: Playlist Genre by Majority Voting - Relationship with Followers??
+
+```{r, eval = FALSE}
+# Count all genres for a given playlist 
+
+# separate genres into individual columns and convert to tidy format
+genre_train <- pl_train %>%
+  # select(playlist_name, artist_name, artist_genres, playlist_followers, playlist_num_tracks) %>% 
+  # split list of genres into individual columns
+  separate(artist_genres, sep = ", ", into = c(paste0("genre", c(1:10)))) %>%
+  # tidying genres
+  gather(key = genre, value = gen, genre1:genre10 )
+
+genre_count <- genre_train %>% 
+  group_by(playlist_name) %>%
+  count(gen)
+
+# Genres are likely to co-occur given that they stem from the artist genre
+genre_vote_top3 <- genre_count %>% 
+  na.omit() %>%  # not all artists have a genre so NA's actually might be a majority..
+  top_n(n = 3, wt = n) %>%
+  spread(gen, n) %>%
+  # replace all NAs with 0s and majority votes with 1
+  mutate_at(vars(-one_of("playlist_name")), funs(ifelse(is.na(.), 0, 1)))
+# 
+# genre_vote_top3 %>%
+#   ungroup() %>% 
+#   summarize_at(vars(-one_of("playlist_name")), funs(sum(.))) %>%
+#   View()
+
+genre_vote_top3
+
+miss_var_summary(genre_vote_top3)
+
+
+```
+
+
+###  Quantitative Audio Features
+
+There are 10 quantitative audio characteristics for each track, such as the loudness, liveness, etc. The full list and descriptions can be found [here](https://developer.spotify.com/web-api/get-audio-features/). 
+
+As we are looking at what makes playlists popular, summary statistics, such as the mean, median and standard deviation of the audio features may be a good place to start. 
+
+#### Summary Statistics 
+
+We can generate a correlation matrix or visualize the individual relationships through scatterplots. Typically if there are a lot of predictors, using the correlation matrix and filtering for absolute correlations above a certain threshold is preferred. However, since we don't have that many variables here (35), we will use both methods. 
+
+
+```{r echo=FALSE}
+
+# descrip_pl <- top_3rd_pl %>%
+descrip_pl <- pl_train %>%
+  # leaving out key, mode and key_mode for now
+  gather(key = audio_feat, value = audio_val, c(danceability, energy, loudness, speechiness: duration_ms)) %>%
+  group_by(playlist_name, audio_feat) %>%
+  # convert duration into minutes?
+  summarize(mean = mean(audio_val, na.rm = TRUE),
+            sd = sd(audio_val, na.rm = TRUE),
+            med = median(audio_val, na.rm = TRUE)) %>%
+  # join with the # of followers
+  left_join(top_3rd_pl %>% distinct(playlist_name, playlist_followers_log)) %>%
+  arrange(desc(playlist_followers_log))
+
+head(descrip_pl)
+
+```
+#### TODO: Audio Feature Skewness
+Before looking at correlations, we should see if our variables are normally distributed by way of histograms.
+
+
+```{r}
+# Individual Histograms
+
+descrip_pl %>% 
+  histoPlot(aes(x = mean, fill = audio_feat)) + 
+  facet_wrap(~ audio_feat, scales = "free", nrow = 3) + 
+  labs(x = "mean of acoustic feature", y = "log(playlist followers)") +
+  ggtitle("playlist mean acoustic features ") +
+  guides(fill = FALSE)
+
+descrip_pl %>% 
+  histoPlot(aes(x = med, fill = audio_feat)) + 
+  facet_wrap(~ audio_feat, scales = "free", nrow = 3) + 
+  labs(x = "median of acoustic feature", y = "log(playlist followers)") +
+  ggtitle("playlist median acoustic features") + 
+  guides(fill = FALSE)
+
+descrip_pl %>% 
+  histoPlot(aes(x = sd, fill = audio_feat)) + 
+  facet_wrap(~ audio_feat, scales = "free", nrow = 3) + 
+  labs(x = "standard deviation of acoustic feature", y = "log(playlist followers)") +
+  ggtitle("playlist standard deviation of acoustic features") + 
+  guides(fill = FALSE)
+
+```
+
+
+<!-- ```{r} -->
+
+<!-- descrip_pl %>% -->
+<!--   select(-c(sd, med)) %>%  -->
+<!--   spread(audio_feat, mean) -->
+
+<!-- descrip_skew <- descrip_pl %>% -->
+<!--   group_by(audio_feat) %>%  -->
+<!--   summarize_at(vars(mean, sd, med), funs(skewness = e1071::skewness(., na.rm = TRUE, type = 2))) -->
+
+<!-- descrip_skew -->
+
+
+<!-- descrip_skew %>% -->
+<!--   mutate_at(vars(mean_skewness, sd_skewness, med_skewness), funs(ifelse(abs(.) >= 1, 1, 0))) -->
+
+<!-- # descrip_pl %>% -->
+<!-- #   group_by(audio_feat) %>% -->
+<!-- #   mutate_at() -->
+<!-- ``` -->
+
+<!-- Any variable with a skewness greater than 1 or less than 1 is considered skewed and far from asymmetric, and thus transformmed.  -->
+
+Next, we visualize the relationship between each audio feature and the number of followers.  (code omitted for simplicity)
+
+```{r,  echo = FALSE}
+
+# Individual scatterplots
+
+descrip_pl %>% 
+  scttrCor(aes(x = mean, y = playlist_followers_log, colour = audio_feat)) + 
+  facet_wrap(~ audio_feat, scales = "free", nrow = 3) + 
+  labs(x = "mean acoustic feature", y = "log(playlist followers)") +
+  ggtitle("playlist mean acoustic features") + 
+  guides(colour = FALSE)
+
+descrip_pl %>% 
+  scttrCor(aes(x = med, y = playlist_followers_log, colour = audio_feat)) + 
+  facet_wrap(~ audio_feat, scales = "free", nrow = 3) + 
+  labs(x = "median acoustic feature", y = "log(playlist followers)") +
+  ggtitle("playlist median acoustic features") + 
+  guides(colour = FALSE)
+
+descrip_pl %>% 
+  scttrCor(aes(x = sd, y = playlist_followers_log, colour = audio_feat)) + 
+  facet_wrap(~ audio_feat, scales = "free", nrow = 3) + 
+  labs(x = "standard deviation of acoustic features", y = "log(playlist followers)") +
+    ggtitle("playlist standard deviation acoustic features") +
+  guides(colour = FALSE)
+
+```
+ 
+ Significant correlations include:
+ 
+ Mean
+ 
+ * danceability, duration_ms, instrumentalness, liveness, loudness, time_signature
+ 
+Median
+ 
+ *  danceability, duration_ms, instrumentalness, liveness, loudness
+ 
+Standard Deviation
+
+ * duration, instrumentalness, loudness, speechiness, tempo, time signature
+
+The relationships between the median and mean don't seem to differ by a wide margin so we can drop the median.
+Instrumentalness stands out as being significant in both terms of mean and standard deviation with the magnitude of the correlation with the response variablebeing greater for standard deviation. Although relationships are slight, the popular, successful playlists tend to be more loud and danceable, with songs that are less likely of being live.
+
+
+#### Second Degree Polynomial Summary Statistics
+
+Second degree polynomials of the audio features might also be worth investigating.
+```{r, echo=FALSE}
+# may help me decide whether to keep mean or median?
+descrip_pl %>%
+  scttrCor(aes(x = mean^2, y = playlist_followers_log, colour = audio_feat)) +
+  facet_wrap(~ audio_feat, scales = "free", nrow = 3) +
+  labs(x = "second degree playlist mean acoustic features", y = "log(playlist followers)") +
+  guides(colour = FALSE) 
+
+descrip_pl %>%
+  scttrCor(aes(x = sd^2, y = playlist_followers_log, colour = audio_feat)) +
+  facet_wrap(~ audio_feat, scales = "free", nrow = 3) +
+  labs(x = "second degree playlist standard deviation of acoustic features", y = "log(playlist followers)") +
+  guides(colour = FALSE) 
+```
+
+<!-- Compared to the first-degree polynomials, many of these are similar in magnitude or slightly larger and as such they may be worth having as a predictor. -->
+
+#### TODO: EDA for Interaction Terms
+
+#### Relationships between Quantitative Audio Features (1)
+
+ Next, we look at all pairwise correlations to determine if there are any relationships that may be interesting.
+ 
+```{r}
+ 
+descrip_wide <- pl_train %>% 
+  group_by(playlist_name) %>% 
+  summarize_at(vars(c(danceability, energy, loudness, speechiness: time_signature)),
+               funs(mean = mean(., na.rm = TRUE),
+                    sd = sd(., na.rm = TRUE),
+                    med = median(., na.rm = TRUE))) %>%
+    # join with the # of followers
+  left_join(pl_train %>% 
+              distinct(playlist_name, playlist_followers_log)) %>% 
+  select(playlist_name, playlist_followers_log, everything())
+
+# The relationships between the median and mean don't seem to differ by a wide margin so we can drop those predictors.
+ descrip_wide <- descrip_wide %>% select(-contains("med"))
+ 
+cor_descrip <- cor(descrip_wide[2:24], use = "pairwise.complete.obs")
+
+corrplot(cor_descrip, order = "hclust", tl.cex = 0.8, tl.col = "black")
+```
+
+
+```{r}
+data.frame(cor_descrip) %>% 
+  select(playlist_followers_log) %>% 
+  rownames_to_column() %>% 
+  arrange(desc(abs(playlist_followers_log))) %>% 
+  as_tibble() %>% 
+  print(n = 10)
+```
+ 
+Several predictors have strong correlations with one another, for example, mean loudness is positively correlated with mean valence, signature, tempo, and energy. It would be worth invesigating these relationships and generating interaction terms.
+
+#### Relationships between Quantitative Audio Features (2)
+
+
+Although the correlation matrix gave us a good overview of possible relationships between audio features, visualizing the individual scatterplots would provide greater insight.
+
+```{r}
+
+
+# Mean
+descrip_wide %>% 
+  select(contains("mean")) %>% 
+  GGally::ggpairs(., aes(alpha = 0.3),
+                  upper = list(continuous = GGally::wrap("cor", size = 3)),
+                  lower = list(continuous = corLine)) +
+  theme(panel.grid.minor = element_blank(), 
+        panel.grid.major = element_blank(),
+        strip.text = element_text(size = 7))
+
+# SD
+descrip_wide %>% 
+  select(contains("sd")) %>% 
+  GGally::ggpairs(., aes(alpha = 0.3),
+                  upper = list(continuous = GGally::wrap("cor", size = 3)),
+                  lower = list(continuous = corLine)) +
+  theme(panel.grid.minor = element_blank(), 
+        panel.grid.major = element_blank(),
+        strip.text = element_text(size = 7))
+
+# 
+# # Median
+# descrip_wide %>% 
+#   select(contains("med")) %>% 
+#   GGally::ggpairs(., aes(alpha = 0.3),
+#                   upper = list(continuous = GGally::wrap("cor", size = 3)),
+#                   lower = list(continuous = corLine)) +
+#   theme(panel.grid.minor = element_blank(), 
+#         panel.grid.major = element_blank(),
+#         strip.text = element_text(size = 7))
+```
+
+
+
+
+
+### Categorical Audio Features - Key, Mode, Key Mode and Time Signature
+
+* major/minor 
+* key - minor is typically more 'sad'?
+
+
+##### Mode 
+
+```{r}
+
+# majority vote for mode
+
+mode_majority <- pl_train %>% group_by(playlist_name) %>%
+  count(mode) %>% 
+  spread(mode, n) %>%
+  summarize(is_major_majority = as.factor(ifelse(major > minor, 1, 0))) %>%
+  mutate_all(funs(replace(., is.na(.), 0)))
+
+# counting mode
+ mode_majority %>% ungroup() %>% 
+  count(is_major_majority)
+ 
+ # visualizing difference in followers between major and minor modes
+pl_train %>% distinct(playlist_name, playlist_followers) %>%
+  left_join(mode_majority) %>%
+ boxJitterPlot(aes(x = is_major_majority, y = log(playlist_followers), fill = is_major_majority )) 
+ 
+
+```
+
+Playlists are overwhelmingly in major...
+
+
+```{r, eval = FALSE}
+# Apparently key means nothing without a code, so scratch all of this
+pl_train$key %>% table()
+
+# the proportion of tracks with a given key?
+key_prop <- pl_train %>% 
+  group_by(playlist_name) %>% 
+  count(key) %>%
+  spread(key, n) %>% 
+    left_join(pl_train %>% distinct(playlist_name, playlist_followers, playlist_num_tracks )) %>%
+    select(playlist_name, playlist_num_tracks, playlist_followers, everything()) %>% 
+  mutate_at(vars(A:`<NA>`), funs(ifelse(is.na(.), 0, .))) %>%
+  mutate_at(vars(A:`<NA>`), funs( (./ playlist_num_tracks) * 100)) #%>% 
+  # rename("NA" = `<NA>`)
+
+key_prop %>% 
+  gather(key = key, value = prop, A:`<NA>`)  %>% 
+  scttrCor(aes(x = prop, y = log(playlist_followers), colour = key), 
+           alpha = 0.5, size = 1, guide = FALSE
+           ) + 
+  facet_wrap(~ key)
+
+```
+
+##### Key 
+```{r, fig.width = 8, fig.height = 6}
+# okay, what about majority key?
+
+key_majority <- pl_train %>% 
+  group_by(playlist_name) %>% 
+  count(key) %>% 
+  top_n(1) %>% 
+  spread(key, n) %>%
+  summarize_at(vars(A:`<NA>`), funs(is_greatest = as.factor(ifelse(is.na(.), 0, 1))))  %>%
+ select(-"<NA>_is_greatest") 
+  # need to create a variable for this?
+
+key_majority %>% 
+  gather(key = key, value = majority, A_is_greatest:`G#_is_greatest`) %>% 
+  
+  left_join(pl_train %>% distinct(playlist_name, playlist_followers, playlist_num_tracks )) %>%
+  select(playlist_name, playlist_num_tracks, playlist_followers, everything()) %>% 
+  # count(key, majority) %>% 
+  # arrange(-n) %>%
+  # print(n = 30)
+  
+  boxJitterPlot(aes(x = majority, y = log(playlist_followers), fill = majority)) + 
+
+  facet_wrap(~ key, nrow = 3) 
+
+      
+```
+##### Key Mode
+
+```{r, fig.width = 8, fig.height = 6}
+# key mode
+key_mode_counts <- pl_train %>%
+  group_by(playlist_name) %>%
+  count(key_mode) %>% 
+  top_n(3) %>% 
+  spread(key_mode, n)  %>%
+  mutate_all(funs(replace(., is.na(.), 0)))
+
+key_mode_counts
+
+# majority wins within playlist
+key_mode_top3_majority <- key_mode_counts %>%
+  left_join(pl_train %>%
+              distinct(playlist_name, playlist_followers, playlist_num_tracks )
+            ) %>%
+  select(playlist_name, playlist_num_tracks, playlist_followers, everything())  %>% 
+  mutate_at(vars(`A major`:`<NA>`), funs(is_greatest = as.factor(ifelse(. == 0, 0, 1)))) %>% 
+  # summarize_at isn't playing nicely, else it would simply replace all the columns with the majority and I wouldn't need to drop the old columns
+  select(-c(`A major`:`<NA>`))
+
+key_mode_top3_majority
+
+
+# proportion of tracks
+# key_mode_prop <- key_mode_counts %>% 
+#   left_join(pl_train %>% distinct(playlist_name, playlist_followers, playlist_num_tracks )) %>%
+#   select(playlist_name, playlist_num_tracks, playlist_followers, everything())  %>%
+#   mutate_at(vars(`A major`:`<NA>`), funs(ifelse(is.na(.), 0, .))) %>%
+#   mutate_at(vars(`A major`:`<NA>`), funs( (./ playlist_num_tracks) * 100)) #%>% 
+# 
+# key_mode_prop
+#
+key_mode_top3_majority  %>% 
+     gather(key_mode, majority, -one_of("playlist_name", "playlist_num_tracks", "playlist_followers")) %>% 
+   boxJitterPlot(aes(x = majority, y = log(playlist_followers), fill = majority)) +
+   facet_wrap(~ key_mode, nrow = 6) +
+   guides(colour = FALSE)
+
+# key_mode_prop %>% 
+#      gather(pred, val, -one_of("playlist_name", "playlist_num_tracks", "playlist_followers")) %>% 
+#      scttrCor(aes(x = as.numeric(val), y = log(playlist_followers), colour = pred), 
+#            alpha = 0.5, size = 1) + 
+#   facet_wrap(~ pred) +
+#   guides(colour = FALSE)
+
+
+```
+##### TODO: Time Signature
+```{r}
+ts_counts <- pl_train %>%
+  group_by(playlist_name) %>%
+  count(time_signature) %>% 
+  top_n(1) %>% 
+  spread(time_signature, n)  %>% 
+  mutate_all(funs(replace(., is.na(.), 0)))
+
+ts_counts
+```
+
+```{r}
+# audio_key_feats <- mode_key %>% 
+#   # left_join(key_prop) %>% 
+#   # left_join(key_majority) %>%
+#   left_join(key_mode_prop) %>% 
+#   left_join(key_mode_majority)
+# 
+# audio_key_feats
+# write_csv(audio_key_feats, "data/output/audio_key_feats.csv")
+```
+
+
+
+### TODO: Words in Playlist Name
+
+```{r, eval = FALSE, include = FALSE}
+library(tidytext)
+
+# types of tracks that are frequently occuring
+track_words <- pl_train %>%
+  # group_by(playlist_name) %>%
+  # distinct(playlist_name) %>%
+  unnest_tokens(word, track_name) %>%
+  anti_join(stop_words) %>%
+  mutate(word = str_to_lower(word)) %>% 
+  count(word, sort = TRUE)
+track_words
+
+
+# types of albums that are frequently occuring
+
+pl_train %>%
+  # group_by(playlist_name) %>%
+  # distinct(playlist_name) %>%
+  unnest_tokens(word, album_name) %>%
+  anti_join(stop_words) %>%
+  mutate(word = str_to_lower(word)) %>% 
+  group_by(playlist_name, playlist_followers) %>% 
+  count(word, sort = TRUE) 
+
+
+```
+## Putting it All Together - Feature Engineering 
+
+After some extensive EDA, we found several features that might help us explain the number of followers a playlist has. We looked at:
+
+Artist Features
+
+* The top 1% of artists by frequency appearinng in the top 33% of most popular playlists (> 190k followers)
+* Artist Followers - Mean and SD (Log Transformed)
+* Artist Popularity - Mean and SD
+* Track Popularity - Mean annd SD
+* The top 5% of genres by frequency appearing in the top 33% of most popular playlists..
+
+Audio Features
+
+* Quantitative Features
+  + Summary Statistics - Mean, Median and Standard Deviation
+  + 2nd Degree Summary Statistics 
+  + Interaction of Summary Statistics - Although not explicitly visited, we will throw these in.
+* Categorical Features
+  + Majority Voting for Key, Mode and Key Mode and ~~Time Signature~~
+
+
+## Artist Features (DONE)
+
+Feature engineering is performed on the full dataset, as we are only aggregating to a playlist level and summarizing on a playlist level, there should be no leakage from the training to the test dataset.
+```{r}
+full <- pl_dat
+```
+
+
+#### Frequent Artists and Artist Genres
+
+Based on our training dataset, if an artist is in the top 1% of occurencees or a genre is in the top 5% of the top 33% of playlists in terms of playlist followers...
+
+
+```{r}
+
+# not efficient..
+
+# one hot encode the 1% of artists in top 33% of playlists
+one_perc_artists <- artist_count$artist_name[artist_count$top_one_perc == 1] # from our EDA
+
+one_perc_artists_pl <- full %>%
+  distinct(playlist_name, artist_name) %>% 
+  mutate(keywords = map(artist_name,
+                           ~ data.frame(one_perc_artists, count = ifelse(str_detect(., regex(one_perc_artists, ignore_case = TRUE)), 1, 0))))
+
+one_perc_artists_full <- one_perc_artists_pl %>% 
+  unnest(keywords) %>%
+  spread(one_perc_artists, count) %>% 
+  group_by(playlist_name) %>% 
+  summarize_at(vars(-one_of("playlist_name", "artist_name")), funs(sum(., na.rm = TRUE))) %>%
+    mutate_at(vars(-one_of("playlist_name")), funs(ifelse(. > 0, 1, 0)))
+
+one_perc_artists_full
+
+# one hot encode the frequently occuring 5% of genres in top 33 % of playlists
+
+five_perc_genres <- gen_count$gen[gen_count$top_five_perc == 1] # from our EDA
+
+five_perc_genres_pl <- full %>% 
+  separate(artist_genres, sep = ", ", into = c(paste0("genre", c(1:10)))) %>%
+  # tidying genres
+  gather(key = genre, value = gen, genre1:genre10 ) %>% 
+  distinct(playlist_name, gen) %>% 
+  # distinct(playlist_name, artist_genres) %>% 
+    mutate(keywords = map(gen,
+                           ~ data.frame(five_perc_genres, count = ifelse(str_detect(., regex(five_perc_genres, ignore_case = TRUE)), 1, 0))))
+
+five_perc_genres_full <- five_perc_genres_pl %>% 
+  unnest(keywords) %>%
+  spread(five_perc_genres, count) %>% 
+  group_by(playlist_name) %>% 
+  summarize_at(vars(-one_of("playlist_name", "gen")), funs(sum(., na.rm = TRUE))) %>% 
+  mutate_at(vars(-one_of("playlist_name")), funs(ifelse(. > 0, 1, 0)))
+```
+
+```{eval = FALSE}
+
+# Dummy variable for whether a top 1% reoccuring artist is in the playlist
+one_perc_artist_key <- full %>% 
+    distinct(playlist_name, artist_name) %>% 
+  mutate(one_perc =  ifelse(artist_name %in% artist_count$artist_name[artist_count$top_one_perc == 1], 1, 0),
+         five_perc = ifelse(artist_name %in% artist_count$artist_name[artist_count$top_five_perc == 1], 1, 0)) %>% 
+    group_by(playlist_name) %>% 
+  # only doing one percent because relationship for five percent did not seem as strong
+  summarize(has_one_perc_artist = ifelse(sum(one_perc) > 0, 1, 0)) %>%
+  mutate(has_one_perc_artist = as.integer(has_one_perc_artist))
+
+one_perc_artist_key 
+# Dummy variable for whether a top 5% genre is in the playlist THIS IS WRONG
+
+
+five_perc_genre_key <- full %>%
+    distinct(playlist_name, artist_genres) %>%
+
+  mutate(one_perc = ifelse(artist_genres %in% gen_count$gen[gen_count$top_one_perc == 1], 1, 0),
+         five_perc = ifelse(artist_genres %in% gen_count$gen[gen_count$top_five_perc == 1], 1, 0)) %>%
+  group_by(playlist_name) %>%
+  summarize(has_five_perc_genre = ifelse(sum(five_perc) > 0, 1, 0)) %>%
+  mutate(has_five_perc_genre = as.integer(has_five_perc_genre))
+#
+# five_perc_genre_key
+
+# Dummy variable for whether a top 1% genre is in the playlist
+
+# one_perc_genre_key <- full %>%
+#   mutate(one_perc = ifelse(artist_genres %in% gen_count$gen[gen_count$top_one_perc == 1], 1, 0),
+#          five_perc = ifelse(artist_genres %in% gen_count$gen[gen_count$top_five_perc == 1], 1, 0)) %>%
+#   group_by(playlist_name) %>%
+#   summarize(has_one_perc_genre = ifelse(sum(one_perc) > 0, 1, 0)) %>%
+#   mutate(has_one_perc_genre = as.integer(has_one_perc_genre))
+# 
+# one_perc_genre_key
+```
+
+<!-- ### Top 100 Artist Presence MUST FIX -->
+
+<!-- ```{r} -->
+
+<!-- top_100_artist_counts_full <- pl_train %>% -->
+<!--   group_by(playlist_name) %>% -->
+<!--   mutate(top_100_artist = ifelse(artist_name %in% top_100_artists, 1, 0)) %>% -->
+<!--   summarize(num_top_100_artist = sum(unique(top_100_artist))) %>% -->
+<!--   arrange(-num_top_100_artist) -->
+
+<!-- top_100_artist_counts_full -->
+<!-- ``` -->
+
+
+### Artist Followers, Artist Popularity, Track Popularity
+
+```{r}
+
+# Summary Statistics for Each Playlist , log artist follower, artist popularity and track popularity
+
+artist_summary_stats <- full %>%
+  group_by(playlist_name) %>%
+  summarize_at(vars(c(artist_pop, track_popularity, artist_followers)),
+               funs( mean = (mean(., na.rm = TRUE)),
+                    # med = (median(., na.rm = TRUE)),
+                    sd = (sqrt(var(., na.rm = TRUE)))))%>%
+  mutate_at(vars(contains("artist_followers")), funs(log(.)))
+
+artist_summary_stats 
+
+
+```
+### OMITTED: Majority Vote for Genres
+
+```{r}
+# majority voting for genres
+
+# separate genres into individual columns and convert to tidy format
+pl_genres <- full %>%
+  # split list of genres into individual columns
+  separate(artist_genres, sep = ", ", into = c(paste0("genre", c(1:10)))) %>%
+  # tidying genres
+  gather(key = genre, value = gen, genre1:genre10 )
+
+
+genre_count_full <- pl_genres %>% 
+  group_by(playlist_name) %>%
+  count(gen)
+
+# top 3
+genre_vote_top3_full <- genre_count_full %>% 
+  na.omit() %>%  # not all artists have a genre so NA's actually might be a majority..
+  top_n(n = 3, wt = n) %>%
+  spread(gen, n) %>%
+  # replace all NAs with 0s and majority votes with 1
+  mutate_at(vars(-one_of("playlist_name")), funs(ifelse(is.na(.), 0, 1))) %>%
+  mutate_at(vars(-one_of("playlist_name")), funs(as.integer))
+
+head(genre_vote_top3_full)
+```
+```{r, eval = FALSE}
+# sanity check
+genre_vote_top3_full[, -1] %>% mutate_all(funs(as.integer(.)))  %>% rowSums()
+
+genre_vote_top3_full[, -1] %>% mutate_all(funs(as.integer(.)))  %>% colSums()
+
+
+```
+
+
+## Quantitative Audio Features (DONE)
+
+### Mean, Median and Standard Deviation of Quantitative Audio Features 
+
+```{r}
+
+audio_feats_descr <- full %>% 
+  group_by(playlist_name) %>% 
+  summarize_at(vars(danceability, energy, loudness, speechiness:duration_ms),
+                      funs(avg = mean(., na.rm = TRUE),
+                           # med = median(., na.rm = TRUE),
+                           sd = sd(., na.rm = TRUE)))
+
+audio_feats_descr  
+```
+
+### Pairwise Interaction and Second Degree Terms between Quantitative Variables
+
+All pairwise interaction terms, need to choose between median, mean and standard deviation.
+
+```{r}
+# Generating All Pairwise Interaction Terms
+
+# some interactions generate NA results, resulting in the row and thus playlist being omitted from the data. although 
+# omitting the playlist is not an issue, the resultant dataframe does not merge correctly with the playlist aggregate data.
+# to circumvent this, we change the na.action to pass, which retains the rows.
+
+options("na.action" ="na.pass") # because we have many nas
+
+descrip_inter <- model.matrix(data = audio_feats_descr, playlist_name ~ .^2)[, -1] %>% as_tibble()
+
+descrip_inter
+
+descrip_inter %>% miss_var_summary()
+options("na.action" = "na.omit")  #na.omit by default
+# Generating All Second Degree Polynomials
+degree_2 <- audio_feats_descr %>%
+  mutate_at(vars(-one_of("playlist_name")), funs("deg2" = . ^2))
+
+head(degree_2)
+```
+
+## Categorical Audio Features (DONE)
+
+#### Major Majority
+```{r}
+
+mode_majority_full <- full %>% group_by(playlist_name) %>%
+  count(mode) %>% 
+  spread(mode, n) %>%
+  summarize(is_major_mode = as.integer(ifelse(major > minor, 1, 0))) %>% 
+  mutate_all(funs(replace(., is.na(.), 0))) %>%
+    mutate_at(vars(-one_of("playlist_name")), funs(as.integer))
+
+
+mode_majority_full %>% count(is_major_mode) %>% mutate(prop = prop.table(n))
+
+```
+
+
+#### Key Mode Majority
+```{r}
+# key mode
+key_mode_counts_full <- full %>%
+  group_by(playlist_name) %>%
+  count(key_mode) %>% 
+  top_n(3) %>% 
+  spread(key_mode, n)  %>%
+  mutate_all(funs(replace(., is.na(.), 0)))
+
+# majority wins within playlist
+key_mode_top3_majority_full <- key_mode_counts_full %>%
+  left_join(full %>%
+              distinct(playlist_name)
+            ) %>%
+  select(playlist_name, everything())  %>% 
+  mutate_at(vars(`A major`:`<NA>`), funs(is_greatest = (ifelse(. == 0, 0, 1)))) %>% 
+  # summarize_at isn't playing nicely, else it would simply replace all the columns with the majority and I wouldn't need to drop the old columns
+  select(-c(`A major`:`<NA>`), -contains("NA")) %>%
+  mutate_at(vars(-one_of("playlist_name")), funs(as.integer))
+
+key_mode_top3_majority_full
+
+```
+
+#### Key Majority
+
+
+```{r}
+
+key_majority_full <- full %>% 
+  group_by(playlist_name) %>% 
+  count(key) %>% 
+  top_n(1) %>% 
+  spread(key, n) %>%
+  summarize_at(vars(A:`<NA>`), funs(is_greatest = (ifelse(is.na(.), 0, 1)))) %>%
+  select(-contains("<NA>")) %>%
+    mutate_at(vars(-one_of("playlist_name")), funs(as.integer))
+
+
+key_majority_full
+
+
+```
+## Final Merge and Cleaning
+
+```{r}
+dat <- full %>% distinct(playlist_name, playlist_followers, playlist_num_tracks) %>%
+  left_join(artist_summary_stats) %>% # 6 
+  left_join(audio_feats_descr) %>% # 20
+  bind_cols(degree_2[,-c(1:21)]) %>% # remove duplicate mean/sd of quant audio features 
+  bind_cols(descrip_inter[,-c(1:20)]) %>% # remove duplicate mean/sd of quant audio features 
+  left_join(mode_majority_full) %>% # 1 
+  left_join(key_mode_top3_majority_full) %>% # 24 
+  left_join(key_majority_full) %>% # 12 
+  left_join(one_perc_artists_full) %>%  # 99 
+  left_join(five_perc_genres_full)  # 49
+
+# sanity check for unique playlists
+# dat %>% count(playlist_name, sort = TRUE)
+# glimpse(dat)
+dim(dat)
+
+dat
+```
+
+### Validity of Data (Missingness, Infinite Values)
+Before we proceed, we need to identify playlists that have missing values for our predictors.
+
+
+```{r, eval = FALSE}
+# which rows have missing data?
+is.na(dat) # TRUE is NA
+rowSums(is.na(dat)) # counts the total number of TRUE NA's (1)
+dat[rowSums(is.na(dat)) > 0, ] # return rows, or playlists that have more than 1 NA in a given row
+nrow(dat[rowSums(is.na(dat)) > 0, ] )# return rows that have more than 1 NA in a given row
+
+miss_var_summary(dat)
+# vis_miss(dat[rowSums(is.na(dat)) > 0, ])
+
+# checking for infinite values
+```
+
+Remove any playlists that have missing values in them, this results in 79 playlists being omitted.
+```{r}
+# remove the missing rows
+dat2 <- dat[!rowSums(is.na(dat)) > 0, ]
+```
+
+
+Next, we identify variables that may have infinite values, such as those that occur when taking the log of 0.
+```{r, eval = FALSE}
+
+# only applies to variables that are numeric
+ dat2_subset <- select_if(dat2, is.double)
+dat2_subset[,is.infinite(colSums(dat2_subset))]  
+
+inf_vars <- names(dat2_subset[,is.infinite(colSums(dat2_subset))]  )
+
+dat2 <- select(dat2, -inf_vars)
+
+```
+
+Some final cleam up.
+
+```{r}
+
+# some cleaning up, need to convert characters to factors and take take the log of playlist values
+dat2 <- dat2 %>% 
+  mutate(log_pl_followers = log(playlist_followers)) %>%
+  mutate_if(is.character, as.factor) %>%
+  # rename :'s in interaction variables and singular spaces with underscores
+  rename_all(funs(gsub(":", "_x_",.) %>%
+                    gsub(" ", "_", .))) 
+
+dim(dat2)
+
+# uncomment if we want to overwrite the .csv
+# write_csv(dat2, "output/dat.csv")
+
+```
+
+Finally, onto the modelling.
+

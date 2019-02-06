@@ -1,0 +1,187 @@
+---
+title: "01. Spotify - Data Mining"
+author: "Delvin So"
+date: '2018-06-22'
+output: 
+  html_document:
+    keep_md: true
+    theme: journal
+    toc: true
+    toc_float : true
+    toc_depth : 2
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, messages = FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      tidy = FALSE,
+                      cache = TRUE,
+                      # set this to false for this notebook b/c don't want to continually query API
+                      eval = FALSE)
+
+suppressMessages(library(tidyverse))
+suppressMessages(library(spotifyr))
+suppressMessages(library(xml2))
+suppressMessages(library(readr))
+suppressMessages(library(httr))
+suppressMessages(library(naniar))
+
+# To make in-line chunks executable
+pl <- read_csv("data/pl.csv", col_types = cols())
+playlist_info2 <- read_csv("data/raw/pl_info.csv", col_types = cols())
+playlist_audio_features2 <- read_csv("data/raw/pl_audio_feats.csv", col_types = cols())
+artist_features2 <- read_csv("data/raw/pl_artist_feats.csv", col_types = cols())
+```
+
+## Problem Statement
+
+The purpose of this project is to gain insight into
+
+1) Key predictors that are influential in a playlist's success
+2) Using the identified predictors, generate a playlist that is successful (metric measured in the # of followers)
+
+## Connecting with the Spotify API
+
+In order to query Spotify's API, we need to set our client ID and secret. This can be done [here](https://developer.spotify.com/documentation/general/guides/authorization-guide/).
+
+
+```{r}
+
+Sys.setenv(SPOTIFY_CLIENT_ID = 'xxxxxxxxxxx')
+Sys.setenv(SPOTIFY_CLIENT_SECRET = 'xxxxxxxxx')
+access_token <- get_spotify_access_token()
+```
+
+## The Mining
+
+The API currently does not offer any access to searching playlists with the most followers - however, we do have access to individual user's playlists. As Spotify's [own account](https://open.spotify.com/user/spotify) has numerous, highly featured playlists, we can use these for our goal of gaining insight into what features make a playlist successful. It's likely that Spotify features these playlists not only because they contain popular songs, but because there are intrinsic characteristics that make them popular. 
+
+It might be worth noting that there are several playlists named 'This is ..' which feature a specific artists' songs. Throughout the data gathering process, we will be using the spotifyr package - a vignette can be found [here](link) and making several modifications of our own.
+
+### Retrieving the Playlists
+
+The first step is to retrieve Spotify's featured playlists - of importance is the uri or the unique resoruce identifier that indicates which playlist we're looking at. In addition to the uri, the function also returns other properties such as the playlist image, the number of tracks and so forth.
+
+```{r}
+# 06/18/2018
+pl <- get_user_playlists("spotify")
+```
+```{r, eval = TRUE}
+glimpse(pl)
+# write_csv(pl, "data/raw/pl_info.csv")
+```
+
+
+There are 1603 playlists in total, the next step is to retrieve the number of followers for each playlist. As of v.1.1.0, spotifyr does not retrieve this metric so we will have to do it ourselves.
+
+NOTE: Edit this into get_user_playlists(). Would need to go deeper into parse_playlist_list_to_df()..
+
+### Retrieve Playlist Information and Followers
+```{r}
+# we use map instead of map_df because it allows for NA's to return into an individual tibble within the list, otherwise the function will break out upon hitting an error
+playlist_info <- map(pl$playlist_uri, ~ tryCatch(get_playlists_info("spotify", .x),
+                                        error = function(e){NA}))
+
+# collapsing the tibbles within the list into one dataframe and cleaning
+playlist_info2 <- bind_rows(playlist_info) %>% 
+  na.omit()
+
+```
+```{r, eval = TRUE}
+head(playlist_info2)
+glimpse(playlist_info2)
+# write_csv(playlist_info2, "data/raw/pl_info.csv")
+```
+There were `r dim(pl)[1] - dim(playlist_info2)[1]` playlists where follower information could not be found. 
+
+### Retrieving Playlist Audio Features
+
+This portion of the data gathering is definitely the most exhaustive one, taking a few hours to run to completion. For each playlist, we're going to retrieve
+
+* the track name
+* the track uri
+* thet track's popularity
+* the artist name
+* the artist album
+* when it was added
+* 14 features related to the music's characteristics (eg. energy, key, acousticness)
+
+A full description of the audio features can be found [here](https://developer.spotify.com/documentation/web-api/reference/tracks/get-audio-features/).
+```{r}
+
+playlist_audio_features <- map(pl$playlist_uri, ~
+                                 tryCatch(get_playlist_audio_features("spotify", .x), 
+                                          error = function(e){NA}))
+
+# collapse list of tibbles and cleaning
+playlist_audio_features2 <- bind_rows(playlist_audio_features) %>% 
+  # removing unnecessary variables - could dig into function and edit it myself
+  select(-c(snapshot_id, playlist_tracks_url,
+            playlist_img, album_img, track_preview_url, track_open_spotify_url)) %>%
+  # is it necessary to omit here?
+  na.omit() #95 053 -> 94 546
+```
+```{r, eval = TRUE}
+head(playlist_audio_features2)
+glimpse(playlist_audio_features2)
+# write_csv(playlist_audio_features2, "data/pl_audio_feats.csv")
+  
+```
+
+We now have the track information for `r dim(playlist_audio_features2)[1]` songs over `r dim(pl)[1]` playlists. Now onto the last bit of information - artist features.
+
+### Retrieving Artist Features
+
+For each artist, we want to retrieve features such as the number of followers they have, their genre, and so forth. Again, spotifyr v1.1.0 does not offer this capability so we had to get a little bit creative and write our own function. 
+
+First, we store the artist names, each one will be individually queried using the Spotify's search endpoint.
+
+```{r, eval = TRUE}
+artist_names <- unique(playlist_audio_features2$artist_name) %>% sort()
+
+```
+There are `r length(artist_names)` artists in Spotify's featured playlists. 
+
+For this section, I used a for loop that would store query each artist's name, return the results and bind it to an existing dataframe. Normally, we would avoid this and do it the 'R' way using vectors, but I couldn't find any other way to store the results as the function ran. This way, the results would be stored in an object and even if the function failed (which it did, several times in fact and which is why I wrote this function in the first place), the results would be stored and we could simply continue querying and adding from the artist which failed. 
+
+```{r}
+ for (i in artist_names){
+      
+        # TODO: checkpoints, maybe check if artist_features already exists and if artist_name is in it, then skip
+        temp <- tryCatch(get_artists_ds(artist_name = i,
+                                  return_closest_artist = TRUE),
+                         error = function(e){NA})
+        
+        print(paste("Artist:", i))
+        
+        if((is.na(temp))){ temp <- rep(NA, 5) } # number of columns in artist_features
+        
+        # create the dataframe of features if it doesn't exist using the first results
+        # else attach the results to the existing df.
+        if(exists("artist_features")){ 
+          artist_features <- rbind(artist_features, temp)
+        }
+        else{
+          artist_features <- temp
+        }
+    }
+    rm(i, temp)
+    
+        
+# for some reason there are duplicates even though we applied unique
+artist_features2 <- artist_features %>%
+  arrange(desc(artist_name, artist_followers)) %>%
+  filter(!duplicated(artist_name))
+```
+
+```{r, eval = TRUE}
+head(artist_features2)
+glimpse(artist_features2)
+# write_csv(artist_features2, "data/raw/pl_artist_feats.csv")
+```
+
+There are `r dim(artist_features2)[1]` artists in Spotify's featured playlists. 
+
+
+Onto the [EDA](link)!
