@@ -30,7 +30,7 @@ The project is broken down into the following notebooks:
 - - - -
 Spotify’s API does not currently offer any access to searching playlists with the most followers - however, we do have access to individual user's playlists. As Spotify's [own account](https://open.spotify.com/user/spotify) has numerous, highly featured playlists, we can use these for our goal of gaining insight into what features make a playlist successful. It's likely that Spotify features these playlists not only because they contain popular songs, but because there are intrinsic characteristics that make them popular.
 
-92876 songs over 1541 playlists were retrieved from Spotify's featured playlists using their API in June 2018 using the spotifyr package and self-modified functions. For each track in each playlist, qualitative audio features such as the key, mode, the artist genre, and quantitative features such as loudness, acoustic ness, valence, etc were also fetched.   Artist information was retrieved based on the first match for a given query, if nothing was returned then the artist information was simply NA. For more detail, please refer to the [data retrieval notebook here](https://github.com/delvinso/spotify-predict-followers/blob/master/02_wrangle_eda_feat.md).
+92876 songs over 1541 playlists were retrieved from Spotify's featured playlists using their API in June 2018 using the spotifyr package and self-modified functions. For each track in each playlist, qualitative audio features such as the key, mode, the artist genre, and quantitative features such as loudness, acoustic ness, valence, etc were also fetched.   Artist information was retrieved based on the first match for a given query, if nothing was returned then the artist information was simply NA. For more detail, please refer to the [data retrieval notebook here](https://github.com/delvinso/spotify-predict-playlist-followers/blob/master/02_wrangle_eda_feat.md).
 
 
 ### Response - Playlist Followers
@@ -42,7 +42,7 @@ The response variable is highly right skewed, and so I log transform it. This ex
 
 ### EDA & Feature Engineering
 - - - -
-As part of [the EDA notebook here](https://github.com/delvinso/spotify-predict-followers/blob/master/02_wrangle_eda_feat.md), I used data on the song level to create playlist-aggregated features  that may be predictive of a playlist’s success, measured in the log of a playlists’ followers.Numerous features were created, mostly by aggregating onto the playlist level as follows:
+As part of [the EDA notebook here](https://github.com/delvinso/spotify-predict-playlist-followers/blob/master/02_wrangle_eda_feat.md), I used data on the song level to create playlist-aggregated features  that may be predictive of a playlist’s success, measured in the log of a playlists’ followers.Numerous features were created, mostly by aggregating onto the playlist level as follows:
 
 1.  Total Number of Tracks in the Playlist **(1)**
 2.  Log of Artist Followers, Artist Popularity and Track Popularity  - Mean and Standard Deviation (except for artist followers) **(5)**
@@ -92,7 +92,7 @@ These metrics will be the basis for model comparison at the end.
 
 ### Models
 - - - -
-For more detail on the models themselves, please refer to [the modelling notebook here](https://github.com/delvinso/spotify-predict-followers/blob/master/03_modeling.md).
+For more detail on the models themselves, please refer to [the modelling notebook here](https://github.com/delvinso/spotify-predict-playlist-followers/blob/master/03_modeling.md).
 
 #### OLS
 - - - -
