@@ -210,7 +210,7 @@ Along with their corresponding scatterplots of predicted vs observed values  ari
 Although the XGBoost model has the greatest cross-validation performance, Random Forest falls slightly behind, only 2.8% shy of Xgboost in terms of R2 while boasting a very similar RMSE. Furthermore, XGBoost requires several hyper-parameters to be tuned before the model could be finalized, whereas the Random Forest model was ‘out of box’ and is highly time efficient relative to XGBoost. However, Random Forest models are weakly interpretable,  whereas gradient boosting is relatively more interpretable so there is definitely a trade-off between the two.
 
 
-##### Validation
+#### Validation
 - - - -
 As XGBoost had the best performance, we will estimate the test error of our model using XGBoost using our held out, 20% validation dataset. The final model has the following performance metrics:
 
