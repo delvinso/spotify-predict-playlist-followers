@@ -1,17 +1,8 @@
-+++
-title =  "  Spotify - Predicting the Success of a Playlist Based on # of Followers"
-author = "Delvin So"
-date = "2019-01-19"
-lastmod = "2019-01-19"
-categories = ["prediction", "spotify", "linear regression", "eda", "xgboost", "random forest", "lasso"]
-tags = ["independent"]
-summary = "Predicting the number of followers a Spotify playlist will garner using playlist-aggregate features."
-draft = false
-highlight = true
-[image]
-  preview_only = true
-math = true
-+++
+
+# Spotify - Predicting the Success of a Playlist Based on # of Followers
+## "Delvin So"
+## "2019-01-19"
+
 
 *Overall, this was a great exercise in data gathering, exploratory data analysis and predictive modelling as it pushed me to communicate my exploratory analysis, results, and understand what was happening behind the scenes of the models rather than treating each one as a black box.*
 
@@ -46,7 +37,7 @@ Spotify’s API does not currently offer any access to searching playlists with 
 - - - -
 The response variable is highly right skewed, and so I log transform it. This expands the values in the range of lower magnitudes while compressing the values in the range of higher magnitudes, essentially normalizing the distribution as much as possible.
 
-![](/img/spotify/before_after_log.png)
+![](/spotify/before_after_log.png)
 
 
 ### EDA & Feature Engineering
@@ -129,7 +120,7 @@ An out of bag random forest does much better in terms of model performance! R2 i
 
 The most important predictors as determined by the % increase in MSE if the variable is randomly permuted is as follows:
 
-![](/img/spotify/rf_imp.png)
+![](/spotify/rf_imp.png)
 
 
 We see that the number of tracks and popularity related features are the most important variables, that is, when these variables are randomly shuffled (permuted), they result in the greatest increase of the test error, or reduction in accuracy. As we saw in the EDA, the track popularity is an important variable and thus likely an important characteristic of determining the success of a playlist. We also see that the majority of the top 30 most important variables are summary statistics related to quantitative audio features, with a few genres and one artist.
@@ -165,7 +156,7 @@ A regularized regression model with only the popularity and follower predictors 
 
 Thus, the 'best' model here would be /#4, where the top 50 correlated predictors and categorical audio features were included. The most important predictors as determined by the absolute magnitude of the coefficients are
 
-![](/img/spotify/lasso_imp.png)
+![](/spotify/lasso_imp.png)
 
 The most important predictors corroborate with what we saw in the EDA, that is, track popularity, the number of tracks, and artist popularity. The remaining predictors are mostly categorical in nature and include key, key mode, along with highly popular genres and artists found in the the most popular playlists. In contrast, random forest had relatively more quantitative audio features.
 
@@ -185,7 +176,7 @@ The cross-validation performance of is:
 ```
 The most important predictors:
 
-![](/img/spotify/xgboost_imp.png)
+![](/spotify/xgboost_imp.png)
 
 Similar to random forest, the most important predictors are the number of tracks and those related to track popularity, which are dominant over all other predictors. Overall, it seems that quantitative audio features are relatively more important than categorical ones.
 
@@ -213,7 +204,7 @@ Along with their corresponding scatterplots of predicted vs observed values  ari
 
 
 
-![](/img/spotify/all_cv_scatter_same_axis.png)
+![](/spotify/all_cv_scatter_same_axis.png)
 
 
 Although the XGBoost model has the greatest cross-validation performance, Random Forest falls slightly behind, only 2.8% shy of Xgboost in terms of R2 while boasting a very similar RMSE. Furthermore, XGBoost requires several hyper-parameters to be tuned before the model could be finalized, whereas the Random Forest model was ‘out of box’ and is highly time efficient relative to XGBoost. However, Random Forest models are weakly interpretable,  whereas gradient boosting is relatively more interpretable so there is definitely a trade-off between the two.
@@ -231,7 +222,7 @@ As XGBoost had the best performance, we will estimate the test error of our mode
 And a corresponding scatterplot of predicted vs observed log # of playlist followers:
 
 
-![](/img/spotify/xgboost_val_scatter.png)
+![](/spotify/xgboost_val_scatter.png)
 
 Generally speaking, the model performs well as seen above. However, we can see it performs poorly when predicting the log number of followers on the lower end (given the cone/funnel shape of the plot), particularly when the log (# playlist followers) is under 10.  This is likely due to variables related to playlists with relatively fewer followers  not being included nor explored.
 
